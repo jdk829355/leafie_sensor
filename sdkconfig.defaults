@@ -1,0 +1,9 @@
+# BLE provisioning (network_provisioning scheme_ble) 용
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+# start_provisioning()에서 NETWORK_PROV_SECURITY_1 사용
+CONFIG_ESP_PROTOCOMM_SUPPORT_SECURITY_VERSION_1=y
+# BLE + Wi-Fi 바이너리가 기본 1MB 앱 파티션을 넘어서 large(약 1.5MB)로 변경
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# telemetry HTTPS(TLS 핸드셰이크)가 app_main 스택에서 돌아 기본 3584로는 부족
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

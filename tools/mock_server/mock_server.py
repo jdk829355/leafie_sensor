@@ -11,9 +11,9 @@ to switch between success / retryable-failure / permanent-failure test cases:
   MISMATCH-* -> /complete returns 409 (permanent failure)
 
 Usage:
-  1. POST /devices/<deviceId>/claims {"scenario": "retry"} -> {"claimToken": "RETRY-abcd1234"}
+  1. POST /api/v1/sensor-devices/<deviceId>/claims {"scenario": "retry"} -> {"claimToken": "RETRY-abcd1234"}
   2. Feed that claimToken to the ESP (BLE claim endpoint)
-  3. ESP calls POST /device-claims/<claimToken>/complete with {"deviceId": "..."}
+  3. ESP calls POST /api/v1/sensor-device-claims/<claimToken>/complete with {"deviceId": "..."}
      (400 if deviceId is missing, 409 if it differs from the deviceId the claim was created for)
 """
 
@@ -50,12 +50,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
-        match = re.match(r"^/devices/([^/]+)/claims$", self.path)
+        match = re.match(r"^/api/v1/sensor-devices/([^/]+)/claims$", self.path)
         if match:
             self._handle_create_claim(match.group(1))
             return
 
-        match = re.match(r"^/device-claims/([^/]+)/complete$", self.path)
+        match = re.match(r"^/api/v1/sensor-device-claims/([^/]+)/complete$", self.path)
         if match:
             self._handle_complete_claim(match.group(1))
             return

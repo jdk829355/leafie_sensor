@@ -579,12 +579,15 @@ backoff: exponential, 2s → 4s → 8s → 16s → 32s (상한 32s)
 현재 예상 API:
 
 ```http
-POST /devices/{deviceId}/claims
-POST /device-claims/{claimToken}/complete
-GET  /device-claims/{claimToken}
+POST /api/v1/sensor-devices/{deviceId}/claims
+POST /api/v1/sensor-device-claims/{claimToken}/complete
+GET  /api/v1/sensor-device-claims/{claimToken}
 ```
 
-### POST /devices/{deviceId}/claims
+FastAPI 기준 경로다. 푸시 설치용 `POST /api/v1/devices`와 구분한다.
+telemetry의 `POST /devices/{deviceId}/telemetry`는 API Gateway라 이 경로를 바꾸지 않는다.
+
+### POST /api/v1/sensor-devices/{deviceId}/claims
 
 호출 주체:
 
@@ -607,7 +610,7 @@ claimToken 발급
 
 ---
 
-### POST /device-claims/{claimToken}/complete
+### POST /api/v1/sensor-device-claims/{claimToken}/complete
 
 호출 주체:
 
@@ -639,7 +642,7 @@ deviceToken 발급
 
 ---
 
-### GET /device-claims/{claimToken}
+### GET /api/v1/sensor-device-claims/{claimToken}
 
 앱이 claim 결과를 확인하기 위해 정상 claim flow에서도 이 API를 주기적으로 polling한다.
 
@@ -659,11 +662,11 @@ claim 결과 확인 (정상 flow)
 Claim에 필요한 최소 핵심 테이블:
 
 ```text
-device
-device_claim
+sensor_devices
+sensor_device_claims
 ```
 
-### device
+### sensor_devices
 
 기기의 현재 상태를 나타낸다.
 
@@ -672,7 +675,7 @@ device_claim
 ```text
 id
 owner_user_id
-device_token_hash
+sensor_token_hash
 status
 firmware_version
 claimed_at
@@ -682,7 +685,7 @@ created_at
 
 `owner_user_id`는 claim 전까지 nullable할 수 있다.
 
-### device_claim
+### sensor_device_claims
 
 기기 claim "시도" 또는 "작업"을 나타낸다.
 
@@ -708,54 +711,57 @@ EXPIRED
 CANCELLED
 ```
 
-`device_claim.user_id`와 `device.owner_user_id`는 의미가 다르다.
+`sensor_device_claims.user_id`와 `sensor_devices.owner_user_id`는 의미가 다르다.
 
 ```text
-device_claim.user_id
+sensor_device_claims.user_id
 = claim을 요청한 사용자
 
-device.owner_user_id
+sensor_devices.owner_user_id
 = 현재 실제 기기 소유자
 ```
 
 claim 성공 전에는 다음 상태가 가능하다.
 
 ```text
-device_claim.user_id = user42
-device_claim.status = PENDING
+sensor_device_claims.user_id = user42
+sensor_device_claims.status = PENDING
 
-device.owner_user_id = NULL
+sensor_devices.owner_user_id = NULL
 ```
 
 claim 성공 이후에만:
 
 ```text
-device.owner_user_id = user42
+sensor_devices.owner_user_id = user42
 ```
 
 로 변경한다.
 
 ### 구현된 스키마 (Leafie PR #94)
 
-위 "예상 필드"는 다음과 같이 확정했다. 테이블 이름은 백엔드 관례에 맞춰 복수형이다.
+위 필드는 다음 테이블로 확정했다. 푸시 설치 테이블 `device_tokens`와 이름이 겹치지 않게
+센서 기기에는 `sensor_`를 붙인다. 요청·응답 필드 `deviceId`, `deviceToken` 이름은 바꾸지 않는다.
+`deviceToken`의 해시는 `sensor_token_hash`다.
 
 ```text
-devices          위의 device. id는 deviceId(12자리 대문자 hex)
-device_claims    위의 device_claim
-plant_devices    식물과 기기의 1:1 연결 (별도 매핑 테이블)
-sensor_readings  telemetry 측정값
+sensor_devices         센서 기기. id는 deviceId(12자리 대문자 hex)
+sensor_device_claims   claim 시도
+plant_sensor_devices   식물과 기기의 1:1 연결
+sensor_readings        telemetry 측정값
 ```
 
-* `devices.id`가 deviceId이며 `owner_user_id`는 claim 전에 NULL이다.
-* `devices.status`는 `UNCLAIMED` / `CLAIMED`다. `CLAIMED`이면 `owner_user_id`, `device_token_hash`,
-  `claimed_at`이 모두 채워지고, `UNCLAIMED`이면 소유자와 토큰이 NULL이어야 한다 (CHECK 제약).
-* 식물 연결은 `devices`에 컬럼을 두지 않고 `plant_devices`로 분리한다.
+* `sensor_devices.id`가 deviceId이며 `owner_user_id`는 claim 전에 NULL이다.
+* `sensor_devices.status`는 `UNCLAIMED` / `CLAIMED`다. `CLAIMED`이면 `owner_user_id`, `sensor_token_hash`,
+  `claimed_at`이 모두 채워지고, `UNCLAIMED`이면 소유자와 토큰 해시가 NULL이어야 한다 (CHECK 제약).
+* 식물 연결은 `sensor_devices`에 컬럼을 두지 않고 `plant_sensor_devices`로 분리한다.
   식물 하나에 기기 하나, 기기 하나에 식물 하나다.
-* `device_claims`의 status는 위 값 그대로이며, 기기당 `PENDING`은 하나만 허용한다.
-* `devices.last_seen_at`은 백엔드가 갱신한다. 수집 Lambda의 DB 역할은 `sensor_readings` INSERT만 가능하다.
-* `devices`는 센서 장치이며 백엔드의 푸시 수신용 `device_tokens`와 무관하다.
+* `sensor_device_claims`의 status는 위 값 그대로이며, 기기당 `PENDING`은 하나만 허용한다.
+* `sensor_devices.last_seen_at`은 백엔드가 갱신한다. 수집 Lambda의 DB 역할은 `sensor_readings` INSERT만 가능하다.
+* `sensor_devices`는 센서 장치이며 백엔드의 푸시 수신용 `device_tokens`와 무관하다.
 
-실제 컬럼과 제약은 Leafie 저장소 `docs/sensor-telemetry.md`가 기준이다.
+컬럼과 제약은 Leafie 저장소 `docs/erd.md`가 기준이다. telemetry 수신 경로는
+`docs/sensor-telemetry.md`가 기준이다.
 
 ---
 
@@ -774,7 +780,7 @@ claimToken 전달
 
 claim 결과는 BLE로 전달하지 않는다.
 
-앱은 `GET /device-claims/{claimToken}`(16번 섹션)를 polling하여 claim 결과를 서버로부터 직접 확인한다.
+앱은 `GET /api/v1/sensor-device-claims/{claimToken}`(16번 섹션)를 polling하여 claim 결과를 서버로부터 직접 확인한다.
 
 claim 시작은 논리적으로 다음 이벤트로 표현한다.
 
@@ -889,7 +895,7 @@ POST {TELEMETRY_BASE_URL}/devices/{deviceId}/telemetry
 * `TELEMETRY_BASE_URL`은 API Gateway(REST API)의 stage까지 포함한 주소다. stage가 빠지면 `403 Forbidden`이 된다.
 * claim, ping용 백엔드 주소(`MOCK_SERVER_BASE_URL`)와는 별개이며, telemetry만 API Gateway로 보낸다.
 * HTTPS이며 서버 인증서는 ESP-IDF 인증서 번들(`crt_bundle_attach`)로 검증한다.
-* 이 경로의 `devices`는 센서 장치다. 백엔드의 푸시 수신용 `POST /devices`와 무관하다.
+* 이 경로는 API Gateway에만 있다. FastAPI의 푸시 설치 `POST /api/v1/devices`와 호스트가 달라 경로를 같이 두지 않는다.
 
 ### Headers
 

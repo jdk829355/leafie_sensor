@@ -229,12 +229,12 @@ static void start_claim_listener(void)
     ESP_LOGI(TAG, "Claim BLE listener started, service name: %s", service_name);
 }
 
-// AGENTS.md 16번 섹션: POST /device-claims/{claimToken}/complete
+// AGENTS.md 16번 섹션: POST /api/v1/sensor-device-claims/{claimToken}/complete
 static claim_req_result_t do_claim_complete_request(const char *claim_token,
                                                       char *device_token_out, size_t device_token_out_len)
 {
-    char url[160];
-    snprintf(url, sizeof(url), "%s/device-claims/%s/complete", MOCK_SERVER_BASE_URL, claim_token);
+    char url[192];
+    snprintf(url, sizeof(url), "%s/api/v1/sensor-device-claims/%s/complete", MOCK_SERVER_BASE_URL, claim_token);
 
     esp_http_client_config_t config = {
         .url = url,

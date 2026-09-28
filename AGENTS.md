@@ -555,6 +555,18 @@ deviceId mismatch
 서버의 명시적인 claim 거절
 ```
 
+`POST /api/v1/sensor-device-claims/{claimToken}/complete`의 실제 HTTP 상태 코드 매핑
+(백엔드 leafie 레포 PR로 확정됨):
+
+```text
+404 = claimToken을 찾을 수 없음                    → permanent failure
+409 = deviceId mismatch                          → permanent failure
+410 = claim 만료(최초 발급 후 5분 경과, 재시도 창 포함) → permanent failure
+422 = 요청 본문 검증 실패(deviceId 누락/형식 오류)      → permanent failure
+429 = rate limit                                 → retryable
+5xx = 서버 오류                                    → retryable
+```
+
 모든 `4xx`를 무조건 permanent failure로 처리하지 말 것.
 
 서버 API 계약에 따라 세부 오류 코드를 판단한다.
@@ -640,6 +652,17 @@ deviceToken 발급
 
 이 API는 네트워크 응답 유실 후 ESP가 재시도할 수 있도록 idempotent하게 설계해야 한다.
 
+**재시도 정책 (확정)**: 이미 `COMPLETED`된 claim이 원래 발급 시각 기준 5분(claim TTL)
+이내에 같은 `claimToken`으로 다시 호출되면, 서버는 새 `deviceToken`을 발급하고 이전
+`deviceToken`을 무효화한다. 5분이 지난 뒤의 재호출은 `410`이다. 동시에 같은 claim이
+완료되면(예: 응답 유실로 인한 재시도와 겹침) 서버가 하나만 실제로 소유권을 확정하고,
+나머지 요청도 동일한 재발급 경로를 타 유효한 `deviceToken`을 받는다.
+
+ESP 입장에서 이 정책은 상태 머신에 영향이 없다: 매 성공 응답마다 받은 `deviceToken`을
+그대로 NVS에 덮어써 저장하면 된다(13번 섹션 그대로, 별도 state 불필요 — 20번 섹션
+원칙 3, 4). 이전에 NVS 저장을 시도했다가 실패한 `deviceToken`은 애초에 저장되지
+않았으므로 무효화 여부를 신경 쓸 필요가 없다.
+
 ---
 
 ### GET /api/v1/sensor-device-claims/{claimToken}
@@ -654,6 +677,9 @@ claim 결과 확인 (정상 flow)
 재연결
 디버깅
 ```
+
+인증은 User JWT다(앱이 호출). 다른 사용자의 claim은 존재 여부를 노출하지 않고 `404`다.
+`status`가 `PENDING`이어도 `expires_at`이 지났으면 서버는 `EXPIRED`로 보고한다.
 
 ---
 

@@ -57,6 +57,9 @@ def _connect() -> pg8000.native.Connection:
         ssl_context = ssl.create_default_context(
             cafile=str(SUPABASE_CA_FILE) if SUPABASE_CA_FILE.exists() else None
         )
+        # Python 3.13의 엄격 검증은 서버가 보내는 Supabase 중간 CA(key usage 확장 없음)를 거부한다.
+        # CA와 호스트명 검증은 그대로 유지하고 이 플래그만 끈다.
+        ssl_context.verify_flags &= ~ssl.VERIFY_X509_STRICT
     return pg8000.native.Connection(
         user=unquote(url.username),
         password=unquote(url.password),

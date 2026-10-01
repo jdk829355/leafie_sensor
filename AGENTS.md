@@ -931,9 +931,15 @@ Authorization: Bearer <deviceToken>
 x-api-key: <공통 API 키>
 ```
 
-* `x-api-key`는 모든 기기가 같은 키를 쓰는 임시 인증이다. 기기별 인증이 아니다.
-* `Authorization`의 `deviceToken`은 전송하지만 현재 API Gateway는 검증하지 않는다.
-  claim API 구현 후 이 토큰으로 검증하는 Authorizer로 교체한다.
+* `x-api-key`는 모든 기기가 같은 키를 쓰는 공통 키다. 기기별 인증이 아니며 Authorizer와 함께 계속 요구된다.
+* `Authorization`의 `deviceToken`은 API Gateway Lambda Authorizer(`leafie-telemetry-authorizer`)가 검증한다.
+  * 경로의 `device_id` 기기가 `CLAIMED`이고, `SHA-256(deviceToken)`이 `sensor_devices.sensor_token_hash`와 같으면 통과한다.
+  * 헤더가 없으면 `401`, 토큰이 틀리거나 기기가 `UNCLAIMED`/미등록이면 `403`이다. 둘 다 SQS에 들어가지 않는다.
+  * Authorizer는 읽기 전용 DB 역할 `sensor_authorizer`로 접속한다 (Leafie `docs/sensor-telemetry.md`).
+    접속 문자열은 SSM `/leafie/telemetry/authorizer/database-url`(SecureString)에 있다.
+  * 결과는 (`Authorization`, 요청 경로) 단위로 60초 캐시된다. 재claim으로 이전 토큰이 무효화돼도 최대 60초는 통과할 수 있다.
+  * 코드와 배포 스크립트는 `tools/authorizer/`에 있다.
+* ESP는 `401`/`403`도 응답 상태만 로그로 남기고 재시도하지 않는다.
 
 ### Body
 
@@ -1032,7 +1038,7 @@ BLE 상시 연결
 
 현재 확정되지 않은 사항:
 
-* 기기별 telemetry 인증(공통 API 키를 Authorizer로 교체하는 시점과 검증 방식).
+* telemetry가 `403`(deviceToken 거부)으로 계속 실패할 때 기기의 동작(예: NVS의 deviceToken을 지우고 `WAITING_CLAIM`으로 돌아갈지). 지금은 로그만 남긴다.
 
 (각 섹션에 개별적으로 명시된 미확정 항목은 별도.)
 

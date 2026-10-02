@@ -369,7 +369,7 @@ static bool claim_subprocess(const char *claim_token, char *device_token_out, si
                 state = CLAIM_SUCCESS;
             } else if (result == CLAIM_REQ_RETRYABLE) {
                 retry_count++;
-                state = (retry_count >= CLAIM_MAX_RETRY) ? CLAIM_FAILED : CLAIM_RETRY_WAIT;
+                state = (retry_count > CLAIM_MAX_RETRY) ? CLAIM_FAILED : CLAIM_RETRY_WAIT; // 최초 요청 1회 + 재시도 5회
             } else {
                 state = CLAIM_FAILED;
             }

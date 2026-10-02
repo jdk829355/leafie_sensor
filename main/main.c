@@ -11,6 +11,7 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_random.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_wifi.h"
@@ -23,12 +24,12 @@
 #include "secrets.h"
 
 // TODO: 테스트용 값. 실제 서비스 결정 시 재검토.
-#define PROV_POP "leafie_pop" // proof-of-possession, dev/test 용도
 #define MOCK_SERVER_BASE_URL "http://192.168.35.115:8080" // claim/ping용 로컬 백엔드
 #define TELEMETRY_BASE_URL "https://1itdoce5k6.execute-api.ap-northeast-2.amazonaws.com/main" // API Gateway (telemetry 전용)
 
 #define NVS_NAMESPACE "leafie"
 #define NVS_KEY_DEVICE_TOKEN "device_token"
+#define NVS_KEY_PROV_POP "prov_pop"
 
 #define CLAIM_MAX_RETRY 5
 static const int CLAIM_BACKOFF_MS[CLAIM_MAX_RETRY] = { 2000, 4000, 8000, 16000, 32000 };
@@ -81,6 +82,31 @@ static void generate_device_id(void)
     snprintf(s_device_id, sizeof(s_device_id), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     ESP_LOGI(TAG, "deviceId: %s", s_device_id);
+}
+
+// AGENTS.md 9번 섹션: BLE provisioning 접속 PIN(PoP). 숫자 8자리.
+// 첫 부팅 때 한 번 만들어 NVS에 저장하고, 이후에는 그대로 쓴다. 기기 라벨에 인쇄하는 값이라
+// 공장 초기화로 지우지 않는다. 라벨을 만들거나 잃어버렸을 때 확인할 수 있도록 부팅마다 로그로 출력한다.
+static char s_prov_pop[9];
+
+static void load_or_create_prov_pop(void)
+{
+    nvs_handle_t handle;
+    ESP_ERROR_CHECK(nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle));
+
+    size_t len = sizeof(s_prov_pop);
+    esp_err_t err = nvs_get_str(handle, NVS_KEY_PROV_POP, s_prov_pop, &len);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        snprintf(s_prov_pop, sizeof(s_prov_pop), "%08lu", (unsigned long)(esp_random() % 100000000UL));
+        ESP_ERROR_CHECK(nvs_set_str(handle, NVS_KEY_PROV_POP, s_prov_pop));
+        ESP_ERROR_CHECK(nvs_commit(handle));
+        ESP_LOGI(TAG, "provisioning PIN generated");
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
+    nvs_close(handle);
+
+    ESP_LOGI(TAG, "label -> ID: %s  PIN: %s", s_device_id, s_prov_pop);
 }
 
 // network_prov_mgr_init()을 claim listener 용도로 다시 호출하면 Wi-Fi STA 설정이
@@ -223,7 +249,7 @@ static void start_claim_listener(void)
     snprintf(service_name, sizeof(service_name), "PROV_%s", s_device_id);
 
     ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("claim"));
-    ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, PROV_POP, service_name, NULL));
+    ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, s_prov_pop, service_name, NULL));
     ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("claim", claim_handler, NULL));
 
     ESP_LOGI(TAG, "Claim BLE listener started, service name: %s", service_name);
@@ -383,7 +409,7 @@ static void wifi_connect_or_provision(void)
         snprintf(service_name, sizeof(service_name), "PROV_%s", s_device_id);
 
         ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("device-info"));
-        ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, PROV_POP, service_name, NULL));
+        ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, s_prov_pop, service_name, NULL));
         ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("device-info", device_info_handler, NULL));
 
         ESP_LOGI(TAG, "Provisioning started, BLE service name: %s", service_name);
@@ -598,6 +624,7 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     generate_device_id();
+    load_or_create_prov_pop();
     wifi_connect_or_provision();
     http_ping_mock_server();
 

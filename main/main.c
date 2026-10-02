@@ -15,6 +15,7 @@
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_wifi.h"
+#include "bootloader_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -97,7 +98,12 @@ static void load_or_create_prov_pop(void)
     size_t len = sizeof(s_prov_pop);
     esp_err_t err = nvs_get_str(handle, NVS_KEY_PROV_POP, s_prov_pop, &len);
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        snprintf(s_prov_pop, sizeof(s_prov_pop), "%08lu", (unsigned long)(esp_random() % 100000000UL));
+        // esp_random()은 Wi-Fi/BLE가 켜져 있을 때만 진짜 난수다. 이 시점에는 아직 RF가 꺼져 있으므로
+        // SAR ADC 잡음 엔트로피를 잠깐 켠다. ADC(토양 센서)와 RF보다 먼저 쓰고 바로 끈다.
+        bootloader_random_enable();
+        uint32_t random_value = esp_random();
+        bootloader_random_disable();
+        snprintf(s_prov_pop, sizeof(s_prov_pop), "%08lu", (unsigned long)(random_value % 100000000UL));
         ESP_ERROR_CHECK(nvs_set_str(handle, NVS_KEY_PROV_POP, s_prov_pop));
         ESP_ERROR_CHECK(nvs_commit(handle));
         ESP_LOGI(TAG, "provisioning PIN generated");
@@ -206,7 +212,7 @@ typedef enum {
 
 static EventGroupHandle_t s_claim_event_group;
 #define CLAIM_TOKEN_RECEIVED_BIT BIT0
-static char s_claim_token[64];
+static char s_claim_token[65]; // 백엔드 claimToken은 token_hex(32) = 64자 + null
 
 static esp_err_t claim_handler(uint32_t session_id, const uint8_t *inbuf, ssize_t inlen,
                                 uint8_t **outbuf, ssize_t *outlen, void *priv_data)

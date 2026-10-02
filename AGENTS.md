@@ -401,8 +401,21 @@ PIN을 모르는 상대는 `deviceId`를 알아도 provisioning 세션을 열 �
 BLE 범위 안의 누구든 자기 계정으로 만든 `claimToken`을 밀어 넣어 아직 claim되지 않은 기기를
 먼저 가져가거나 Wi-Fi 자격증명을 바꿔치기할 수 있다.
 
-현재 `main/main.c`의 `PROV_POP "leafie_pop"`은 모든 기기가 공유하는 dev/test용 고정값이다.
-위 방식으로 교체하기 전까지의 임시 값이며, 배포용으로 쓰지 않는다.
+PIN 생성 시점에는 Wi-Fi/BLE가 아직 꺼져 있어 `esp_random()`이 진짜 난수가 아니다. 그래서 생성할 때만
+`bootloader_random_enable()`/`bootloader_random_disable()`로 SAR ADC 잡음 엔트로피를 켠다. 토양 센서 ADC 초기화보다 먼저 끝나야 한다.
+
+고정 PoP(`leafie_pop`)는 코드에서 제거했다. `tools/phone_sim.py`는 `--pop` 또는 `PROV_POP`으로 PIN을 받는다.
+
+### Wi-Fi 목록 스캔
+
+앱이 보여 줄 Wi-Fi 목록은 기기가 스캔한 결과를 쓴다. ESP-IDF provisioning 매니저의 `prov-scan` 엔드포인트가
+BLE로 목록(SSID, RSSI, 채널, 보안 방식)을 돌려준다. 별도 구현은 없다.
+
+* CLI(`esp_prov.py`) 시험에서 기기가 보낸 SSID 목록을 받아 선택한 네트워크로 연결되는 것을 확인했다.
+  그 시험은 PIN 도입 전 펌웨어(고정 PoP)로 했다. PIN 적용 후 세션에서의 스캔은 기기 시험 때 다시 확인한다.
+* iOS는 일반 앱이 주변 Wi-Fi 목록을 읽을 수 없어 앱 스캔은 쓰지 않는다. 비밀번호는 사용자가 입력한다.
+* 목록에 없는 숨김 SSID는 앱에서 직접 입력할 수 있게 한다.
+* ESP32-C3는 2.4GHz 전용(802.11 b/g/n)이다. 5GHz 네트워크는 스캔 목록에도 나오지 않는다.
 
 ---
 

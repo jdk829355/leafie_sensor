@@ -480,6 +480,37 @@ PIN 생성 시점에는 Wi-Fi/BLE가 아직 꺼져 있어 `esp_random()`이 진�
 | `PROVISIONING` | `true` | 버튼으로 Wi-Fi를 재설정한 기기 | Wi-Fi만 전달. claim 불필요 |
 | `WAITING_CLAIM` | `false` | Wi-Fi는 연결됨. claim 대기 | claimToken 전달 |
 
+앱의 판단 규칙:
+
+```text
+Wi-Fi 정보 입력 창  : state == "PROVISIONING" 일 때 띄운다 (hasDeviceToken과 무관).
+claim 단계 필요 여부 : hasDeviceToken == false 이면 Wi-Fi 연결 뒤 claim까지 진행한다.
+                     true 이면 Wi-Fi만 받으면 ACTIVE가 되므로 claim은 하지 않는다.
+```
+
+claimToken을 보낸 뒤에는 서버의 claim 상태와 BLE 방송을 함께 본다. claim이 성공하면 기기는 BLE를 다시 켜지 않으므로
+`PROV_<deviceId>` 방송의 재등장은 기기 쪽 실패(`CLAIM_FAILED` 또는 재부팅)를 뜻한다.
+
+| 서버 `GET claim` | BLE 방송 | 의미 |
+|---|---|---|
+| `COMPLETED` | 없음 | 성공 |
+| `PENDING` | 다시 나타남 | 기기가 포기함. 연결해 `device-info.state`로 분기한다 |
+| `PENDING` | 없음 | `CLAIMING` 진행 중(최대 약 55초). 약 75초가 지나도 같으면 오류로 안내한다 |
+
+방송이 다시 나타나 `device-info`를 읽었을 때:
+
+| state | 의미 | 앱 동작 |
+|---|---|---|
+| `WAITING_CLAIM` | Wi-Fi 정보는 남아 있고 claim만 실패 | 새 claim을 발급하고(서버가 이전 PENDING을 취소) 토큰을 다시 보낸다 |
+| `PROVISIONING` (`hasDeviceToken: false`) | Wi-Fi 정보가 지워짐(5분 규칙 또는 사용자의 버튼 조작) | Wi-Fi 정보를 먼저 전달하고, 연결된 뒤 **새 claim**으로 진행한다 |
+
+`PROVISIONING`으로 돌아간 기기는 이전 claimToken을 이미 버렸다(RAM에만 있었음). 앱은 항상 새 claim을 발급한다.
+
+**예외: `WAITING_CLAIM`인데 Wi-Fi가 이미 불량인 경우.** Wi-Fi가 붙은 뒤 공유기나 비밀번호가 바뀌었고 5분 규칙이 아직
+동작하기 전이면, 기기는 Wi-Fi 정보를 들고 있어서 `device-info`로 구분할 수 없다. 이때 claim은 계속 실패한다.
+앱은 같은 기기에서 claim이 **2~3번 연속 실패**하면 "Wi-Fi 설정이 바뀌었을 수 있습니다. 기기 버튼을 3초 눌러
+Wi-Fi를 다시 설정하세요"로 안내한다. 5분이 지나면 기기가 스스로 `PROVISIONING`으로 돌아가기도 한다(7번 섹션).
+
 ### Wi-Fi 실패 시 재수신
 
 PROVISIONING 중 비밀번호가 틀리거나 AP를 못 찾으면 앱은 상태 조회에서 `AuthError`/`NetworkNotFound`를 받는다.

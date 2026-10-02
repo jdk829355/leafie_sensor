@@ -206,9 +206,10 @@ BOOT
  │
  ├─ Wi-Fi credential 없음
  │        ↓
- │   PROVISIONING
- │        │
- │        │ provisioning 성공
+ │   PROVISIONING ←──┐
+ │        │          │ 비밀번호 오류 / AP 없음 (CRED_FAIL)
+ │        │          │ 같은 BLE 연결에서 Wi-Fi 정보 재수신
+ │        │ Wi-Fi 정보 수신
  │        ↓
  └──→ CONNECTING
           │
@@ -239,6 +240,11 @@ BOOT
           WAITING_CLAIM          ACTIVE
 ```
 
+`ACTIVE`에서 Wi-Fi가 끊겨도 상태는 `ACTIVE`로 유지한다. 재접속만 계속 시도하고 텔레메트리는 실패하면 버린다(19번 섹션).
+`CONNECTING`으로 되돌리지 않는 이유는 `CONNECTING`이 BLE와 5분 규칙(아래)의 대상 상태이기 때문이다.
+
+버튼(8번 섹션)은 어느 상태에서도 동작하는 global event이며 상태 전이가 아니라 재부팅이다.
+
 `CONNECTING`에서의 재시도는 별도의 `RECONNECTING` 상태로 만들지 않는다.
 
 재시도 시 행동이 달라지는 요구가 생기기 전까지 `CONNECTING` 내부에서 처리한다.
@@ -254,16 +260,23 @@ Wi-Fi 연결이 오래 실패할 때의 처리(아래 "Wi-Fi 장기 실패 처�
 | `BOOT`           | Wi-Fi credential 없음 | provisioning 시작     | `PROVISIONING`   |
 | `BOOT`           | Wi-Fi credential 있음 | Wi-Fi 연결 시작         | `CONNECTING`     |
 | `PROVISIONING`   | provisioning 성공     | Wi-Fi 연결 시작         | `CONNECTING`     |
+| `PROVISIONING`   | 비밀번호 오류, AP 없음      | 상태머신 reset, Wi-Fi 정보 재수신 | `PROVISIONING`   |
 | `CONNECTING`     | 연결 성공               | deviceToken 확인      | `WIFI_CONNECTED` |
-| `CONNECTING`     | 연결 실패               | backoff 후 재시도       | `CONNECTING`     |
+| `CONNECTING`     | 연결 실패               | 재시도                  | `CONNECTING`     |
+| `CONNECTING`     | 연결 5분 연속 실패, 토큰 없음  | Wi-Fi 정보 삭제 후 재부팅   | `BOOT` → `PROVISIONING` |
 | `WIFI_CONNECTED` | deviceToken 있음      | 정상 동작 준비            | `ACTIVE`         |
 | `WIFI_CONNECTED` | deviceToken 없음      | claim 시작 대기         | `WAITING_CLAIM`  |
 | `WAITING_CLAIM`  | `CLAIM_START` 수신    | claim subprocess 시작 | `CLAIMING`       |
 | `CLAIMING`       | `CLAIM_SUCCESS`     | 정상 동작 시작            | `ACTIVE`         |
-| `CLAIMING`       | `CLAIM_FAILED`      | 새로운 claim 대기        | `WAITING_CLAIM`  |
-| `ACTIVE`         | Wi-Fi disconnected  | Wi-Fi 재연결           | `CONNECTING`     |
+| `CLAIMING`       | `CLAIM_FAILED`      | claimToken 폐기, 새로운 claim 대기 | `WAITING_CLAIM`  |
+| `WAITING_CLAIM`  | Wi-Fi 5분 연속 끊김, 토큰 없음 | Wi-Fi 정보 삭제 후 재부팅   | `BOOT` → `PROVISIONING` |
+| `ACTIVE`         | Wi-Fi disconnected  | 재접속만 시도, 상태 유지      | `ACTIVE`         |
+| 모든 상태            | 버튼 3초 이상 후 놓음       | Wi-Fi 정보 삭제 후 재부팅   | `BOOT`           |
+| 모든 상태            | 버튼 10초 누름           | Wi-Fi 정보와 deviceToken 삭제 후 재부팅 | `BOOT`           |
 
-### Wi-Fi 장기 실패 처리 (확정, 구현 전)
+`CLAIMING` 중에는 5분 규칙을 보류한다. claim 상태머신이 끝난 뒤 조건을 확인한다.
+
+### Wi-Fi 장기 실패 처리 (확정, 토큰 없는 경우만 구현됨, 기기 시험 전)
 
 Wi-Fi가 연속으로 끊겨 있는 시간이 **5분**을 넘으면 `deviceToken` 유무에 따라 다르게 처리한다.
 연결에 성공하면 이 시간은 0으로 되돌린다. 서버 오류(5xx 등)로 claim이나 업로드가 실패하는 것은 대상이 아니다.
@@ -288,9 +301,8 @@ Wi-Fi가 끊긴 상태만 센다.
   API 키나 Authorizer 설정 오류 한 번이 전체 기기의 등록을 지울 수 있기 때문이다. 소유 이전은 공장 초기화(8번)로 한다.
 ```
 
-Wi-Fi가 필요한 다른 상태에서도 `WIFI_DISCONNECTED`가 발생할 수 있다.
-
-이를 global event로 처리할지 각 상태별 transition으로 처리할지는 구현 단계에서 결정한다.
+Wi-Fi가 필요한 다른 상태에서도 `WIFI_DISCONNECTED`가 발생할 수 있다. global event로 만들지 않고 위 표와 같이
+상태별로 처리한다: `CONNECTING`은 재시도, `ACTIVE`는 재접속만 하고 상태 유지, 토큰이 없는 상태는 5분 규칙을 적용한다.
 
 ---
 

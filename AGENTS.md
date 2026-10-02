@@ -272,7 +272,7 @@ Wi-Fi가 끊긴 상태만 센다.
 | deviceToken | 5분 이상 연속 끊김 시 동작 |
 |---|---|
 | 없음 (claim 전: `CONNECTING`, `WAITING_CLAIM`) | 지킬 것이 없으므로 Wi-Fi 정보를 지우고 `PROVISIONING`으로 돌아간다. |
-| 있음 (`ACTIVE` 계열) | Wi-Fi 정보와 `deviceToken`을 **지우지 않고** BLE 광고를 켜서 새 Wi-Fi 정보만 받는다. 연결되면 `ACTIVE`로 복귀한다. |
+| 있음 (`ACTIVE` 계열) | **미정(23번 섹션)**. Wi-Fi 정보와 `deviceToken`은 지우지 않고 새 Wi-Fi 정보만 받아야 하지만, 아래 제약 때문에 방식을 다시 정해야 한다. |
 
 규칙:
 
@@ -280,8 +280,10 @@ Wi-Fi가 끊긴 상태만 센다.
 - 시간 기준이다. 공유기 재부팅이나 정전 복구 때는 기기가 먼저 켜져 몇 분간 실패하는 것이 정상이다.
 - CLAIMING 중에는 동작을 보류한다. claim 상태머신(최대 5회 재시도, 약 90초)이 끝난 뒤 조건을 확인한다.
   CLAIM_FAILED가 되면 claimToken은 폐기하고 WAITING_CLAIM으로 간다(claimToken은 NVS에 저장하지 않는다).
-- deviceToken이 있을 때 BLE를 다시 열어도 기존 Wi-Fi로의 재접속은 계속한다. 일시 장애였다면 광고 중에 복구된다.
-- 이 BLE 세션에는 claim 엔드포인트를 등록하지 않는다(이미 등록된 기기). PIN(9번 섹션)은 그대로 필요하다.
+- 제약(소스 확인): network_prov_mgr_start_provisioning()은 시작할 때 STA를 끊고 RAM의 STA 설정을 비운 뒤
+  esp_wifi_disconnect()를 호출한다(manager.c). 그래서 BLE를 연 동안에는 기존 Wi-Fi로의 재접속이 멈춘다.
+  "광고하면서 기존 Wi-Fi 재접속을 계속한다"는 방식은 쓸 수 없다. 광고를 시간 제한이 있는 창으로 여는 방안은 23번 섹션.
+- deviceToken이 있는 기기를 위한 BLE 세션에는 claim 엔드포인트를 등록하지 않는다(이미 등록된 기기). PIN(9번 섹션)은 필요하다.
 - deviceToken을 가진 기기가 telemetry에서 403을 받아도 토큰을 자동으로 지우지 않는다.
   API 키나 Authorizer 설정 오류 한 번이 전체 기기의 등록을 지울 수 있기 때문이다. 소유 이전은 공장 초기화(8번)로 한다.
 ```
@@ -314,9 +316,18 @@ provisioning PoP
 공유기나 Wi-Fi 비밀번호를 바꾸는 것은 공장 초기화가 아니다. 그 경우는 9번 섹션의 "Wi-Fi 장기 실패 처리"로
 `deviceToken`을 유지한 채 Wi-Fi 정보만 새로 받는다. 서버에서 기기를 삭제(unclaim)할 필요가 없다.
 
-**트리거 (확정, 구현 전)**: BOOT 버튼(GPIO9, 누르면 LOW)을 **5초 이상** 누르고 있으면 `FACTORY_RESET`이다.
+**트리거 (확정, 구현됨, 기기 시험 전)**: BOOT 버튼(GPIO9, 누르면 LOW) 누름 시간으로 구분한다.
 어느 상태에서도 동작해야 하므로 부팅 직후부터 버튼을 감시한다. 보드에 이미 있는 버튼을 입력으로 읽는 것이며
 센서를 새로 배선하는 것이 아니다(2번 섹션의 GPIO9 상시 배선 제외 원칙과 충돌하지 않는다).
+
+```text
+3초 이상 ~ 10초 미만에서 놓음   Wi-Fi 재설정  Wi-Fi 정보만 지우고 재부팅. deviceToken 유지.
+10초 이상 누름 (누르는 중)       공장 초기화   Wi-Fi 정보와 deviceToken 삭제 후 재부팅.
+```
+
+- Wi-Fi 재설정은 놓을 때 판정한다. 누르는 중에 3초에서 실행하면 10초까지 누르려는 사람이 중간에 재설정된다.
+- LED(GPIO8) 피드백: 3초가 지나면 2번 깜빡인다(지금 놓으면 Wi-Fi 재설정). 10초가 되면 5번 깜빡이고 초기화한다.
+- Wi-Fi 재설정 후에는 `deviceToken`이 있으므로 BLE(PROVISIONING)로 Wi-Fi만 받으면 claim 없이 바로 `ACTIVE`가 된다.
 
 **서버와의 관계**: 기기에서 공장 초기화를 해도 서버는 기기를 `CLAIMED`로 기억한다. 서버는 `CLAIMED` 기기에 대한
 새 claim을 거부(`409`)하므로 소유자 변경이나 재등록은 앱에서 기기를 삭제한 뒤 공장 초기화하고 새 claim을 만드는 순서로 한다.
@@ -404,7 +415,7 @@ PROV_<deviceId>      예: PROV_D40592E7D168
 
 앱은 `PROV_` 접두사로 기기를 찾고, 뒤쪽 `deviceId`로 어느 기기인지 구분한다.
 
-**PIN(PoP) 방식 (확정, 구현 전)**
+**PIN(PoP) 방식 (확정, 구현됨, 기기 시험 전)**
 
 ```text
 형식: 숫자 8자리 (예: 48201937)
@@ -441,6 +452,28 @@ PIN 생성 시점에는 Wi-Fi/BLE가 아직 꺼져 있어 `esp_random()`이 진�
 `bootloader_random_enable()`/`bootloader_random_disable()`로 SAR ADC 잡음 엔트로피를 켠다. 토양 센서 ADC 초기화보다 먼저 끝나야 한다.
 
 고정 PoP(`leafie_pop`)는 코드에서 제거했다. `tools/phone_sim.py`는 `--pop` 또는 `PROV_POP`으로 PIN을 받는다.
+
+### BLE `device-info` 응답
+
+앱은 BLE에 연결하자마자 기기가 어떤 상황인지 알 수 있다. `device-info`는 세 모드(`PROVISIONING`, `WAITING_CLAIM`)의
+BLE 세션 모두에 등록한다.
+
+```json
+{ "deviceId": "D40592E7D168", "state": "WAITING_CLAIM", "hasDeviceToken": false }
+```
+
+| state | hasDeviceToken | 의미 | 앱이 할 일 |
+|---|---|---|---|
+| `PROVISIONING` | `false` | 처음 등록(Wi-Fi 정보 없음) | Wi-Fi 전달 → 이후 claim |
+| `PROVISIONING` | `true` | 버튼으로 Wi-Fi를 재설정한 기기 | Wi-Fi만 전달. claim 불필요 |
+| `WAITING_CLAIM` | `false` | Wi-Fi는 연결됨. claim 대기 | claimToken 전달 |
+| `WIFI_RECONFIG` | `true` | 연결 장기 실패 후 광고하는 기기 | 값만 예약됨(미구현, 23번 섹션) |
+
+### Wi-Fi 실패 시 재수신
+
+PROVISIONING 중 비밀번호가 틀리거나 AP를 못 찾으면 앱은 상태 조회에서 `AuthError`/`NetworkNotFound`를 받는다.
+기기는 `CRED_FAIL`에서 `network_prov_mgr_reset_wifi_sm_state_on_failure()`를 호출하므로 앱은 같은 BLE 연결에서
+Wi-Fi 정보를 다시 보낼 수 있다. 재부팅은 필요 없다.
 
 ### Wi-Fi 목록 스캔
 
@@ -1159,7 +1192,11 @@ BLE 상시 연결
 
 * provisioning BLE를 항상 켜 둘지, 부팅 후 일정 시간이나 버튼 입력으로 제한할지(9번 섹션의 PIN과 별개의 추가 방어).
   18번 섹션은 `WAITING_CLAIM`에서 BLE를 켜므로 그 설계와 함께 정한다.
-* 앱이 각 상태에서 Wi-Fi 불량을 알아채는 방법(BLE `device-info`에 상태 필드를 추가할지, 마지막 오류를 알려 주는 읽기 전용 엔드포인트를 둘지).
+* `deviceToken`이 있는 기기가 Wi-Fi 연결에 5분 이상 실패했을 때 새 Wi-Fi 정보를 받게 하는 방식(7번 섹션 제약).
+  BLE를 열면 기존 Wi-Fi 재접속이 멈추므로, 시간 제한이 있는 광고 창(예: 5분 광고 후 닫고 재접속 5분)으로 번갈아 시도할지 정해야 한다.
+  그동안 이 경우는 버튼의 Wi-Fi 재설정(8번 섹션)으로 복구한다.
+* 마지막 claim 실패 원인을 알려 주는 읽기 전용 BLE 엔드포인트(`device-status`). 앱에서 필요가 확인될 때까지 보류한다.
+* 앱의 오프라인 판정 기준은 마지막 수신 후 25분이다(텔레메트리 주기 10분 기준). 앱 쪽 규칙이며 기기와 무관하다.
 * 라벨 PIN을 잃어버렸을 때의 복구 절차(지금은 시리얼 로그를 보거나 NVS를 지우고 새로 만드는 수밖에 없다).
 * telemetry가 `403`(deviceToken 거부)으로 계속 실패할 때 기기의 동작(예: NVS의 deviceToken을 지우고 `WAITING_CLAIM`으로 돌아갈지). 지금은 로그만 남긴다.
 

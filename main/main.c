@@ -11,7 +11,9 @@
 #include "esp_http_client.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "driver/gpio.h"
 #include "esp_random.h"
+#include "esp_timer.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
 #include "esp_wifi.h"
@@ -31,6 +33,16 @@
 #define NVS_NAMESPACE "leafie"
 #define NVS_KEY_DEVICE_TOKEN "device_token"
 #define NVS_KEY_PROV_POP "prov_pop"
+#define NVS_NAMESPACE_WIFI "nvs.net80211" // esp_wifi가 STA 자격증명을 저장하는 namespace
+
+// AGENTS.md 8번 섹션: BOOT 버튼(GPIO9, 누르면 LOW). 놓을 때 3초 이상이면 Wi-Fi 재설정, 10초가 되면 공장 초기화.
+#define RESET_BUTTON_GPIO GPIO_NUM_9
+#define STATUS_LED_GPIO GPIO_NUM_8 // 온보드 LED. 극성과 무관하게 깜빡임으로만 피드백한다.
+#define BUTTON_WIFI_RESET_MS 3000
+#define BUTTON_FACTORY_RESET_MS 10000
+
+// AGENTS.md 7번 섹션: Wi-Fi가 이 시간 이상 연속으로 끊겨 있으면 장기 실패로 본다.
+#define WIFI_LONG_FAILURE_US (5LL * 60 * 1000 * 1000)
 
 #define CLAIM_MAX_RETRY 5
 static const int CLAIM_BACKOFF_MS[CLAIM_MAX_RETRY] = { 2000, 4000, 8000, 16000, 32000 };
@@ -75,6 +87,11 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 
 static char s_device_id[13]; // 12 hex chars + null terminator
+
+// BLE device-info 응답용 (AGENTS.md 9번 섹션). BLE를 여는 쪽에서 모드를 정한다.
+static const char *s_ble_mode = "PROVISIONING";
+static bool s_has_device_token;
+static volatile bool s_wifi_connected;
 
 static void generate_device_id(void)
 {
@@ -129,6 +146,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_ERROR_CHECK(esp_wifi_set_max_tx_power(34));
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_wifi_connected = false;
         wifi_event_sta_disconnected_t *event = (wifi_event_sta_disconnected_t *)event_data;
         esp_err_t err = esp_wifi_connect();
         if (err == ESP_ERR_WIFI_SSID && s_has_saved_wifi_config) {
@@ -142,6 +160,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "Got IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        s_wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     }
 }
@@ -160,9 +179,16 @@ static void prov_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Wi-Fi credentials received");
         device_set_state(DEVICE_STATE_CONNECTING);
         break;
-    case NETWORK_PROV_WIFI_CRED_FAIL:
-        ESP_LOGE(TAG, "Provisioning failed");
+    case NETWORK_PROV_WIFI_CRED_FAIL: {
+        network_prov_wifi_sta_fail_reason_t *reason = (network_prov_wifi_sta_fail_reason_t *)event_data;
+        ESP_LOGE(TAG, "Provisioning failed: %s",
+                 *reason == NETWORK_PROV_WIFI_STA_AUTH_ERROR ? "Wi-Fi password incorrect" : "Wi-Fi AP not found");
+        // 상태를 FAIL에서 되돌려야 앱이 같은 BLE 연결에서 자격증명을 다시 보낼 수 있다.
+        // 이 호출은 틀린 자격증명도 지운다.
+        device_set_state(DEVICE_STATE_PROVISIONING);
+        network_prov_mgr_reset_wifi_sm_state_on_failure();
         break;
+    }
     case NETWORK_PROV_WIFI_CRED_SUCCESS:
         ESP_LOGI(TAG, "Provisioning successful");
         break;
@@ -186,7 +212,8 @@ static esp_err_t device_info_handler(uint32_t session_id, const uint8_t *inbuf, 
     (void)priv_data;
 
     char *resp = NULL;
-    int len = asprintf(&resp, "{\"deviceId\":\"%s\"}", s_device_id);
+    int len = asprintf(&resp, "{\"deviceId\":\"%s\",\"state\":\"%s\",\"hasDeviceToken\":%s}",
+                       s_device_id, s_ble_mode, s_has_device_token ? "true" : "false");
     if (len < 0) {
         return ESP_ERR_NO_MEM;
     }
@@ -254,8 +281,11 @@ static void start_claim_listener(void)
     char service_name[32];
     snprintf(service_name, sizeof(service_name), "PROV_%s", s_device_id);
 
+    s_ble_mode = "WAITING_CLAIM";
+    ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("device-info"));
     ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("claim"));
     ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, s_prov_pop, service_name, NULL));
+    ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("device-info", device_info_handler, NULL));
     ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("claim", claim_handler, NULL));
 
     ESP_LOGI(TAG, "Claim BLE listener started, service name: %s", service_name);
@@ -380,6 +410,104 @@ static void save_device_token(const char *token)
     ESP_ERROR_CHECK(nvs_set_str(handle, NVS_KEY_DEVICE_TOKEN, token));
     ESP_ERROR_CHECK(nvs_commit(handle));
     nvs_close(handle);
+    s_has_device_token = true;
+}
+
+// AGENTS.md 8번 섹션. 지운 뒤 재부팅해 정상 boot flow(Wi-Fi 정보 없음 -> PROVISIONING)를 다시 탄다.
+// esp_wifi_restore()는 Wi-Fi 초기화 전에는 쓸 수 없어서 namespace를 직접 지운다.
+static void erase_wifi_credentials(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE_WIFI, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_erase_all(handle);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+static void erase_device_token(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_erase_key(handle, NVS_KEY_DEVICE_TOKEN); // prov_pop과 deviceId는 남긴다.
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+static void led_blink(int count)
+{
+    for (int i = 0; i < count; i++) {
+        gpio_set_level(STATUS_LED_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        gpio_set_level(STATUS_LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
+}
+
+// 버튼 감시(8번 섹션)와 Wi-Fi 장기 실패 감시(7번 섹션)를 한 task에서 처리한다.
+static void device_monitor_task(void *arg)
+{
+    gpio_config_t button = {
+        .pin_bit_mask = 1ULL << RESET_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+    };
+    ESP_ERROR_CHECK(gpio_config(&button));
+    gpio_config_t led = {
+        .pin_bit_mask = 1ULL << STATUS_LED_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+    };
+    ESP_ERROR_CHECK(gpio_config(&led));
+
+    int64_t pressed_since_us = 0;
+    bool wifi_reset_signaled = false;
+    int64_t wifi_down_since_us = 0;
+
+    while (1) {
+        int64_t now_us = esp_timer_get_time();
+
+        if (gpio_get_level(RESET_BUTTON_GPIO) == 0) {
+            if (pressed_since_us == 0) {
+                pressed_since_us = now_us;
+                wifi_reset_signaled = false;
+            }
+            int64_t held_ms = (now_us - pressed_since_us) / 1000;
+            if (held_ms >= BUTTON_FACTORY_RESET_MS) {
+                ESP_LOGW(TAG, "factory reset: erasing Wi-Fi credentials and deviceToken");
+                led_blink(5);
+                erase_wifi_credentials();
+                erase_device_token();
+                esp_restart();
+            } else if (held_ms >= BUTTON_WIFI_RESET_MS && !wifi_reset_signaled) {
+                wifi_reset_signaled = true;
+                led_blink(2); // 지금 놓으면 Wi-Fi 재설정, 계속 누르면 공장 초기화
+            }
+        } else {
+            if (pressed_since_us != 0 && wifi_reset_signaled) {
+                // 3초 이상 10초 미만에서 놓았다.
+                ESP_LOGW(TAG, "Wi-Fi reset: erasing Wi-Fi credentials");
+                erase_wifi_credentials();
+                esp_restart();
+            }
+            pressed_since_us = 0;
+        }
+
+        // AGENTS.md 7번 섹션: Wi-Fi가 5분 이상 연속으로 끊겨 있고 deviceToken이 없으면 PROVISIONING으로 돌아간다.
+        // CLAIMING 중에는 보류한다(claim 상태머신이 끝난 뒤 확인). deviceToken이 있는 경우는 아직 구현하지 않는다.
+        bool watch_state = s_state == DEVICE_STATE_CONNECTING || s_state == DEVICE_STATE_WAITING_CLAIM;
+        if (s_wifi_connected || !watch_state || s_has_device_token) {
+            wifi_down_since_us = 0;
+        } else if (wifi_down_since_us == 0) {
+            wifi_down_since_us = now_us;
+        } else if (now_us - wifi_down_since_us >= WIFI_LONG_FAILURE_US) {
+            ESP_LOGW(TAG, "Wi-Fi down for 5 min without deviceToken: erasing Wi-Fi credentials");
+            erase_wifi_credentials();
+            esp_restart();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
 
 static void wifi_connect_or_provision(void)
@@ -414,6 +542,7 @@ static void wifi_connect_or_provision(void)
         char service_name[32];
         snprintf(service_name, sizeof(service_name), "PROV_%s", s_device_id);
 
+        s_ble_mode = "PROVISIONING";
         ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("device-info"));
         ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, s_prov_pop, service_name, NULL));
         ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("device-info", device_info_handler, NULL));
@@ -631,11 +760,15 @@ void app_main(void)
 
     generate_device_id();
     load_or_create_prov_pop();
+
+    char device_token[128];
+    s_has_device_token = load_device_token(device_token, sizeof(device_token));
+    xTaskCreate(device_monitor_task, "device_monitor", 4096, NULL, 5, NULL);
+
     wifi_connect_or_provision();
     http_ping_mock_server();
 
-    char device_token[128];
-    if (load_device_token(device_token, sizeof(device_token))) {
+    if (s_has_device_token) {
         device_set_state(DEVICE_STATE_ACTIVE);
         ESP_LOGI(TAG, "deviceToken found in NVS, device is ACTIVE");
         telemetry_loop(device_token);

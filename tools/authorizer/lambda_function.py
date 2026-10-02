@@ -5,7 +5,8 @@ POST /devices/{deviceId}/telemetry 요청의 `Authorization: Bearer <deviceToken
 경로의 deviceId 기기가 CLAIMED이고 해시가 일치하면 Allow, 아니면 Deny한다.
 
 Authorizer 유형은 REQUEST, Identity source는 `method.request.header.Authorization`과
-`method.request.path.device_id`로 설정해 결과를 (토큰, 기기) 단위로 캐시한다.
+`context.path`로 설정해 결과를 (토큰, 기기) 단위로 캐시한다. 경로 파라미터(`method.request.path.device_id`)는
+Identity source로 쓸 수 없어서 요청 경로 전체(`context.path`)를 쓴다. 이 함수는 경로 파라미터 `device_id`를 읽는다.
 
 접속 문자열은 SSM Parameter Store(SecureString)에서 읽는다. 환경변수 DATABASE_URL_PARAM에
 파라미터 이름을 넣는다. 값 형식은 consumer와 같다 (Supavisor 풀러 주소).

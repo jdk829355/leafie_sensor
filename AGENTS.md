@@ -160,6 +160,7 @@ deviceId
 
 ```text
 deviceId
+provisioning PoP (BLE 접속 PIN, 9번 섹션)
 Wi-Fi credentials
 deviceToken
 sensor calibration data
@@ -278,6 +279,15 @@ deviceToken
 진행 중인 claim 관련 임시 데이터
 ```
 
+다음 값은 삭제하지 않는다.
+
+```text
+deviceId (MAC에서 계산되므로 어차피 동일)
+provisioning PoP
+```
+
+PoP는 기기에 붙은 라벨에 인쇄된 값이다. 지우면 라벨과 어긋나 기기를 쓸 수 없게 된다.
+
 이후 ESP를 reboot한다.
 
 ```text
@@ -333,6 +343,66 @@ Claim
 ```
 
 Wi-Fi 연결 성공이 곧 claim 성공을 의미하지 않는다.
+
+### BLE 기기 이름, ID, PIN(PoP)
+
+BLE 접속에는 서로 다른 두 값이 쓰인다.
+
+```text
+ID  (deviceId)
+= 어느 기기인지 구분하는 이름표. 비밀이 아니다. BLE 이름에 그대로 노출된다.
+
+PIN (= PoP, Proof of Possession)
+= 그 기기에 접속할 자격을 증명하는 비밀. 기기 NVS와 기기에 붙은 라벨에만 있다.
+```
+
+사용자에게 보이는 이름은 PIN이고, 코드와 ESP-IDF 용어는 PoP다. 같은 값이다.
+`deviceToken`, `claimToken`은 이 값들과 다르다. 그 두 개는 서버와의 HTTPS 구간에서만 쓰이고,
+ID와 PIN은 앱과 기기 사이의 BLE 구간에서만 쓰인다.
+
+**BLE 기기 이름 (확정)**
+
+```text
+PROV_<deviceId>      예: PROV_D40592E7D168
+```
+
+앱은 `PROV_` 접두사로 기기를 찾고, 뒤쪽 `deviceId`로 어느 기기인지 구분한다.
+
+**PIN(PoP) 방식 (확정, 구현 전)**
+
+```text
+형식: 숫자 8자리 (예: 48201937)
+생성: 첫 부팅 때 esp_random()으로 한 번 생성해 NVS에 저장한다. 이미 있으면 새로 만들지 않는다.
+공개: 시리얼 로그로 출력한다. 기기를 만드는 사람이 이 값을 라벨에 옮겨 적는다.
+초기화: 공장 초기화(8번)로 지우지 않는다.
+```
+
+기기에 붙이는 라벨은 ID와 PIN을 모두 적는다.
+
+```text
+Leafie 센서
+ID : D40592E7D168
+PIN: 48201937
+```
+
+앱 사용 흐름:
+
+```text
+BLE 검색 → PROV_<deviceId> 목록 표시
+    ↓
+사용자가 라벨의 ID와 같은 기기를 선택 (근처에 한 대뿐이면 생략 가능)
+    ↓
+사용자가 라벨의 PIN을 입력 (QR 스캔은 쓰지 않는다)
+    ↓
+앱이 PIN을 PoP로 사용해 protocomm 세션을 연다 (NETWORK_PROV_SECURITY_1)
+```
+
+PIN을 모르는 상대는 `deviceId`를 알아도 provisioning 세션을 열 수 없다. 이 PIN이 없으면
+BLE 범위 안의 누구든 자기 계정으로 만든 `claimToken`을 밀어 넣어 아직 claim되지 않은 기기를
+먼저 가져가거나 Wi-Fi 자격증명을 바꿔치기할 수 있다.
+
+현재 `main/main.c`의 `PROV_POP "leafie_pop"`은 모든 기기가 공유하는 dev/test용 고정값이다.
+위 방식으로 교체하기 전까지의 임시 값이며, 배포용으로 쓰지 않는다.
 
 ---
 
@@ -1038,6 +1108,9 @@ BLE 상시 연결
 
 현재 확정되지 않은 사항:
 
+* provisioning BLE를 항상 켜 둘지, 부팅 후 일정 시간이나 버튼 입력으로 제한할지(9번 섹션의 PIN과 별개의 추가 방어).
+  18번 섹션은 `WAITING_CLAIM`에서 BLE를 켜므로 그 설계와 함께 정한다.
+* 라벨 PIN을 잃어버렸을 때의 복구 절차(지금은 시리얼 로그를 보거나 NVS를 지우고 새로 만드는 수밖에 없다).
 * telemetry가 `403`(deviceToken 거부)으로 계속 실패할 때 기기의 동작(예: NVS의 deviceToken을 지우고 `WAITING_CLAIM`으로 돌아갈지). 지금은 로그만 남긴다.
 
 (각 섹션에 개별적으로 명시된 미확정 항목은 별도.)

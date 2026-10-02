@@ -35,13 +35,13 @@
 #define NVS_KEY_PROV_POP "prov_pop"
 #define NVS_NAMESPACE_WIFI "nvs.net80211" // esp_wifi가 STA 자격증명을 저장하는 namespace
 
-// AGENTS.md 8번 섹션: BOOT 버튼(GPIO9, 누르면 LOW). 놓을 때 3초 이상이면 Wi-Fi 재설정, 10초가 되면 공장 초기화.
+// docs/factory-reset.md: BOOT 버튼(GPIO9, 누르면 LOW). 놓을 때 3초 이상이면 Wi-Fi 재설정, 10초가 되면 공장 초기화.
 #define RESET_BUTTON_GPIO GPIO_NUM_9
 #define STATUS_LED_GPIO GPIO_NUM_8 // 온보드 LED. 극성과 무관하게 깜빡임으로만 피드백한다.
 #define BUTTON_WIFI_RESET_MS 3000
 #define BUTTON_FACTORY_RESET_MS 10000
 
-// AGENTS.md 7번 섹션: Wi-Fi가 이 시간 이상 연속으로 끊겨 있으면 장기 실패로 본다.
+// docs/state-machine.md: Wi-Fi가 이 시간 이상 연속으로 끊겨 있으면 장기 실패로 본다.
 #define WIFI_LONG_FAILURE_US (5LL * 60 * 1000 * 1000)
 
 #define CLAIM_MAX_RETRY 5
@@ -49,7 +49,7 @@ static const int CLAIM_BACKOFF_MS[CLAIM_MAX_RETRY] = { 2000, 4000, 8000, 16000, 
 
 static const char *TAG = "leafie";
 
-// AGENTS.md 6번 섹션의 상위 상태머신. CLAIMING/ACTIVE는 claim subprocess가
+// docs/state-machine.md의 상위 상태머신. CLAIMING/ACTIVE는 claim subprocess가
 // 아직 없어서 도달하지 않지만, 다음 단계에서 이어붙일 자리로 남겨둔다.
 typedef enum {
     DEVICE_STATE_BOOT,
@@ -88,7 +88,7 @@ static EventGroupHandle_t s_wifi_event_group;
 
 static char s_device_id[13]; // 12 hex chars + null terminator
 
-// BLE device-info 응답용 (AGENTS.md 9번 섹션). BLE를 여는 쪽에서 모드를 정한다.
+// BLE device-info 응답용 (docs/provisioning.md). BLE를 여는 쪽에서 모드를 정한다.
 static const char *s_ble_mode = "PROVISIONING";
 static bool s_has_device_token;
 static volatile bool s_wifi_connected;
@@ -102,7 +102,7 @@ static void generate_device_id(void)
     ESP_LOGI(TAG, "deviceId: %s", s_device_id);
 }
 
-// AGENTS.md 9번 섹션: BLE provisioning 접속 PIN(PoP). 숫자 8자리.
+// docs/provisioning.md: BLE provisioning 접속 PIN(PoP). 숫자 8자리.
 // 첫 부팅 때 한 번 만들어 NVS에 저장하고, 이후에는 그대로 쓴다. 기기 라벨에 인쇄하는 값이라
 // 공장 초기화로 지우지 않는다. 라벨을 만들거나 잃어버렸을 때 확인할 수 있도록 부팅마다 로그로 출력한다.
 static char s_prov_pop[9];
@@ -223,7 +223,7 @@ static esp_err_t device_info_handler(uint32_t session_id, const uint8_t *inbuf, 
     return ESP_OK;
 }
 
-// AGENTS.md 13번 섹션의 claim subprocess 내부 상태.
+// docs/claim-state-machine.md의 claim subprocess 내부 상태.
 typedef enum {
     CLAIM_REQUESTING,
     CLAIM_RETRY_WAIT,
@@ -266,7 +266,7 @@ static esp_err_t claim_handler(uint32_t session_id, const uint8_t *inbuf, ssize_
     return ESP_OK;
 }
 
-// AGENTS.md 18번 섹션: WAITING_CLAIM 상태에서도 claimToken을 받을 수 있어야 하므로
+// docs/ble-endpoints.md: WAITING_CLAIM 상태에서도 claimToken을 받을 수 있어야 하므로
 // BLE(network_prov_mgr)를 다시 켠다. Wi-Fi는 이미 연결돼 있으므로 여기서는 claim
 // endpoint만 등록한다.
 static void start_claim_listener(void)
@@ -291,7 +291,7 @@ static void start_claim_listener(void)
     ESP_LOGI(TAG, "Claim BLE listener started, service name: %s", service_name);
 }
 
-// AGENTS.md 16번 섹션: POST /api/v1/sensor-device-claims/{claimToken}/complete
+// docs/claim-api.md: POST /api/v1/sensor-device-claims/{claimToken}/complete
 static claim_req_result_t do_claim_complete_request(const char *claim_token,
                                                       char *device_token_out, size_t device_token_out_len)
 {
@@ -347,7 +347,7 @@ static claim_req_result_t do_claim_complete_request(const char *claim_token,
         return CLAIM_REQ_PERMANENT;
     }
 
-    // AGENTS.md 15번 섹션: HTTP timeout/DNS/5xx/429는 retryable, 나머지는 permanent.
+    // docs/claim-state-machine.md: HTTP timeout/DNS/5xx/429는 retryable, 나머지는 permanent.
     if (status == 429 || (status >= 500 && status < 600)) {
         return CLAIM_REQ_RETRYABLE;
     }
@@ -355,7 +355,7 @@ static claim_req_result_t do_claim_complete_request(const char *claim_token,
     return CLAIM_REQ_PERMANENT;
 }
 
-// AGENTS.md 13/14번 섹션의 claim subprocess. 성공하면 device_token_out에 deviceToken을 채우고 true.
+// docs/claim-state-machine.md의 claim subprocess. 성공하면 device_token_out에 deviceToken을 채우고 true.
 static bool claim_subprocess(const char *claim_token, char *device_token_out, size_t device_token_out_len)
 {
     claim_state_t state = CLAIM_REQUESTING;
@@ -413,7 +413,7 @@ static void save_device_token(const char *token)
     s_has_device_token = true;
 }
 
-// AGENTS.md 8번 섹션. 지운 뒤 재부팅해 정상 boot flow(Wi-Fi 정보 없음 -> PROVISIONING)를 다시 탄다.
+// docs/factory-reset.md. 지운 뒤 재부팅해 정상 boot flow(Wi-Fi 정보 없음 -> PROVISIONING)를 다시 탄다.
 // esp_wifi_restore()는 Wi-Fi 초기화 전에는 쓸 수 없어서 namespace를 직접 지운다.
 static void erase_wifi_credentials(void)
 {
@@ -493,7 +493,7 @@ static void device_monitor_task(void *arg)
             pressed_since_us = 0;
         }
 
-        // AGENTS.md 7번 섹션: Wi-Fi가 5분 이상 연속으로 끊겨 있고 deviceToken이 없으면 PROVISIONING으로 돌아간다.
+        // docs/state-machine.md: Wi-Fi가 5분 이상 연속으로 끊겨 있고 deviceToken이 없으면 PROVISIONING으로 돌아간다.
         // CLAIMING 중에는 보류한다(claim 상태머신이 끝난 뒤 확인). deviceToken이 있는 경우는 아직 구현하지 않는다.
         bool watch_state = s_state == DEVICE_STATE_CONNECTING || s_state == DEVICE_STATE_WAITING_CLAIM;
         if (s_wifi_connected || !watch_state || s_has_device_token) {
@@ -592,7 +592,7 @@ static void http_ping_mock_server(void)
     esp_http_client_cleanup(client);
 }
 
-// AGENTS.md 19번 섹션: 측정 -> 즉시 HTTPS 업로드 -> sleep 반복. 업로드 실패 시 재시도/버퍼링 없음.
+// docs/telemetry.md: 측정 -> 즉시 HTTPS 업로드 -> sleep 반복. 업로드 실패 시 재시도/버퍼링 없음.
 // TODO: 개발용 10초. 운영 값은 10분(10 * 60 * 1000).
 #define TELEMETRY_INTERVAL_MS (10 * 1000)
 

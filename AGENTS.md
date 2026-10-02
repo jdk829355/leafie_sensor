@@ -243,6 +243,8 @@ BOOT
 
 재시도 시 행동이 달라지는 요구가 생기기 전까지 `CONNECTING` 내부에서 처리한다.
 
+Wi-Fi 연결이 오래 실패할 때의 처리(아래 "Wi-Fi 장기 실패 처리")도 새 state를 만들지 않고 이 규칙 안에서 다룬다.
+
 ---
 
 ## 7. Main State Transition Table
@@ -260,6 +262,29 @@ BOOT
 | `CLAIMING`       | `CLAIM_SUCCESS`     | 정상 동작 시작            | `ACTIVE`         |
 | `CLAIMING`       | `CLAIM_FAILED`      | 새로운 claim 대기        | `WAITING_CLAIM`  |
 | `ACTIVE`         | Wi-Fi disconnected  | Wi-Fi 재연결           | `CONNECTING`     |
+
+### Wi-Fi 장기 실패 처리 (확정, 구현 전)
+
+Wi-Fi가 연속으로 끊겨 있는 시간이 **5분**을 넘으면 `deviceToken` 유무에 따라 다르게 처리한다.
+연결에 성공하면 이 시간은 0으로 되돌린다. 서버 오류(5xx 등)로 claim이나 업로드가 실패하는 것은 대상이 아니다.
+Wi-Fi가 끊긴 상태만 센다.
+
+| deviceToken | 5분 이상 연속 끊김 시 동작 |
+|---|---|
+| 없음 (claim 전: `CONNECTING`, `WAITING_CLAIM`) | 지킬 것이 없으므로 Wi-Fi 정보를 지우고 `PROVISIONING`으로 돌아간다. |
+| 있음 (`ACTIVE` 계열) | Wi-Fi 정보와 `deviceToken`을 **지우지 않고** BLE 광고를 켜서 새 Wi-Fi 정보만 받는다. 연결되면 `ACTIVE`로 복귀한다. |
+
+규칙:
+
+```text
+- 시간 기준이다. 공유기 재부팅이나 정전 복구 때는 기기가 먼저 켜져 몇 분간 실패하는 것이 정상이다.
+- CLAIMING 중에는 동작을 보류한다. claim 상태머신(최대 5회 재시도, 약 90초)이 끝난 뒤 조건을 확인한다.
+  CLAIM_FAILED가 되면 claimToken은 폐기하고 WAITING_CLAIM으로 간다(claimToken은 NVS에 저장하지 않는다).
+- deviceToken이 있을 때 BLE를 다시 열어도 기존 Wi-Fi로의 재접속은 계속한다. 일시 장애였다면 광고 중에 복구된다.
+- 이 BLE 세션에는 claim 엔드포인트를 등록하지 않는다(이미 등록된 기기). PIN(9번 섹션)은 그대로 필요하다.
+- deviceToken을 가진 기기가 telemetry에서 403을 받아도 토큰을 자동으로 지우지 않는다.
+  API 키나 Authorizer 설정 오류 한 번이 전체 기기의 등록을 지울 수 있기 때문이다. 소유 이전은 공장 초기화(8번)로 한다.
+```
 
 Wi-Fi가 필요한 다른 상태에서도 `WIFI_DISCONNECTED`가 발생할 수 있다.
 
@@ -285,6 +310,17 @@ deviceToken
 deviceId (MAC에서 계산되므로 어차피 동일)
 provisioning PoP
 ```
+
+공유기나 Wi-Fi 비밀번호를 바꾸는 것은 공장 초기화가 아니다. 그 경우는 9번 섹션의 "Wi-Fi 장기 실패 처리"로
+`deviceToken`을 유지한 채 Wi-Fi 정보만 새로 받는다. 서버에서 기기를 삭제(unclaim)할 필요가 없다.
+
+**트리거 (확정, 구현 전)**: BOOT 버튼(GPIO9, 누르면 LOW)을 **5초 이상** 누르고 있으면 `FACTORY_RESET`이다.
+어느 상태에서도 동작해야 하므로 부팅 직후부터 버튼을 감시한다. 보드에 이미 있는 버튼을 입력으로 읽는 것이며
+센서를 새로 배선하는 것이 아니다(2번 섹션의 GPIO9 상시 배선 제외 원칙과 충돌하지 않는다).
+
+**서버와의 관계**: 기기에서 공장 초기화를 해도 서버는 기기를 `CLAIMED`로 기억한다. 서버는 `CLAIMED` 기기에 대한
+새 claim을 거부(`409`)하므로 소유자 변경이나 재등록은 앱에서 기기를 삭제한 뒤 공장 초기화하고 새 claim을 만드는 순서로 한다.
+이 거부는 남이 기기를 초기화해도 소유권을 가져갈 수 없게 하는 보호이기도 하다.
 
 PoP는 기기에 붙은 라벨에 인쇄된 값이다. 지우면 라벨과 어긋나 기기를 쓸 수 없게 된다.
 
@@ -1123,6 +1159,7 @@ BLE 상시 연결
 
 * provisioning BLE를 항상 켜 둘지, 부팅 후 일정 시간이나 버튼 입력으로 제한할지(9번 섹션의 PIN과 별개의 추가 방어).
   18번 섹션은 `WAITING_CLAIM`에서 BLE를 켜므로 그 설계와 함께 정한다.
+* 앱이 각 상태에서 Wi-Fi 불량을 알아채는 방법(BLE `device-info`에 상태 필드를 추가할지, 마지막 오류를 알려 주는 읽기 전용 엔드포인트를 둘지).
 * 라벨 PIN을 잃어버렸을 때의 복구 절차(지금은 시리얼 로그를 보거나 NVS를 지우고 새로 만드는 수밖에 없다).
 * telemetry가 `403`(deviceToken 거부)으로 계속 실패할 때 기기의 동작(예: NVS의 deviceToken을 지우고 `WAITING_CLAIM`으로 돌아갈지). 지금은 로그만 남긴다.
 

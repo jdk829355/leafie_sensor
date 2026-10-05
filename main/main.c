@@ -27,7 +27,7 @@
 #include "secrets.h"
 
 // TODO: 테스트용 값. 실제 서비스 결정 시 재검토.
-#define MOCK_SERVER_BASE_URL "http://192.168.35.115:8080" // claim/ping용 로컬 백엔드
+#define MOCK_SERVER_BASE_URL "http://192.168.35.41:8000" // claim/ping용 로컬 백엔드
 #define TELEMETRY_BASE_URL "https://1itdoce5k6.execute-api.ap-northeast-2.amazonaws.com/main" // API Gateway (telemetry 전용)
 
 #define NVS_NAMESPACE "leafie"
@@ -246,6 +246,12 @@ static esp_err_t claim_handler(uint32_t session_id, const uint8_t *inbuf, ssize_
 {
     (void)session_id;
     (void)priv_data;
+
+    // GATT 테이블이 모드마다 달라지면 앱/OS의 캐시가 어긋나므로 PROVISIONING에서도 이 endpoint를
+    // 등록한다. 그 대신 claim을 받을 수 없는 모드에서는 거절한다.
+    if (strcmp(s_ble_mode, "WAITING_CLAIM") != 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
 
     cJSON *root = cJSON_ParseWithLength((const char *)inbuf, inlen);
     cJSON *token_item = root ? cJSON_GetObjectItem(root, "claimToken") : NULL;
@@ -544,8 +550,10 @@ static void wifi_connect_or_provision(void)
 
         s_ble_mode = "PROVISIONING";
         ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("device-info"));
+        ESP_ERROR_CHECK(network_prov_mgr_endpoint_create("claim"));
         ESP_ERROR_CHECK(network_prov_mgr_start_provisioning(NETWORK_PROV_SECURITY_1, s_prov_pop, service_name, NULL));
         ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("device-info", device_info_handler, NULL));
+        ESP_ERROR_CHECK(network_prov_mgr_endpoint_register("claim", claim_handler, NULL));
 
         ESP_LOGI(TAG, "Provisioning started, BLE service name: %s", service_name);
     } else {

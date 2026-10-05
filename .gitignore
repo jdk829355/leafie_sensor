@@ -82,3 +82,6 @@ main/secrets.h
 
 # clangd cache
 .cache/
+
+# phone_sim 테스트 설정(계정/키)
+tools/phone_sim.env

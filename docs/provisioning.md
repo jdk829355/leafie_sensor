@@ -60,7 +60,7 @@ PROV_<deviceId>      예: PROV_D40592E7D168
 
 앱은 `PROV_` 접두사로 기기를 찾고, 뒤쪽 `deviceId`로 어느 기기인지 구분한다.
 
-**PIN(PoP) 방식 (확정, 구현됨, 기기 시험 전)**
+**PIN(PoP) 방식 (확정, 구현됨, 기기 시험 완료)**
 
 ```text
 형식: 숫자 8자리 (예: 48201937)
@@ -101,7 +101,7 @@ PIN 생성 시점에는 Wi-Fi/BLE가 아직 꺼져 있어 `esp_random()`이 진�
 ## BLE `device-info` 응답
 
 앱은 BLE에 연결하고 PIN으로 세션을 연 뒤 `device-info`로 기기가 어떤 상황인지 알 수 있다(BLE 방송에는 이름
-`PROV_<deviceId>`만 있다). `device-info`는 `PROVISIONING`, `WAITING_CLAIM` 두 BLE 세션 모두에 등록한다.
+`PROV_<deviceId>`만 있다). `device-info`와 `claim`은 `PROVISIONING`, `WAITING_CLAIM` 두 BLE 세션 모두에 등록한다. 모드마다 GATT 테이블이 달라지면 OS/앱의 GATT 캐시가 어긋나(macOS에서 `Invalid endpoint: claim`, `Invalid Handle` 확인) endpoint 집합을 항상 같게 유지한다. `PROVISIONING`에서 `claim`을 호출하면 기기는 거절한다(`ESP_ERR_INVALID_STATE`).
 
 ```json
 { "deviceId": "D40592E7D168", "state": "WAITING_CLAIM", "hasDeviceToken": false }

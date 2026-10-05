@@ -62,6 +62,8 @@ claim
 → ESP 내부적으로 START_CLAIM(claimToken) 이벤트 발생
 ```
 
+두 endpoint는 `PROVISIONING`, `WAITING_CLAIM` 세션 모두에 등록한다([provisioning.md](provisioning.md)). claim을 받을 수 없는 `PROVISIONING`에서 `claim`을 호출하면 거절한다.
+
 `device-info` 응답에는 `state`, `hasDeviceToken`도 포함된다. 현재 형식은 [provisioning.md](provisioning.md)를 본다.
 
 payload는 JSON을 사용한다.
